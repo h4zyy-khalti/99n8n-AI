@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  backend:
+    image: kcr.khalti.com.np/kwati/99n8n-backend:develop
+    container_name: backend
+    env_file:
+      - .env
+    ports:
+      - "4000:4000"
+    restart: unless-stopped
+
+  frontend:
+    image: kcr.khalti.com.np/kwati/99n8n-frontend:develop
+    container_name: frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - backend
+    restart: unless-stopped

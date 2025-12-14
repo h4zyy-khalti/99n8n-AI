@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Node/React
+frontend/node_modules/
+frontend/.env*
+frontend/build/
+frontend/dist/
+frontend/.next/
+
+# Git/Editor/OS
+.git/
+.gitignore
+.dockerignore
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Misc
+README.md
+**/*.log
