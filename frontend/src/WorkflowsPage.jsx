@@ -18,7 +18,6 @@ export default function WorkflowsPage() {
 
   const [workflows, setWorkflows] = useState([]);
   const [executions, setExecutions] = useState([]);
-  const [userAccess, setUserAccess] = useState({});
   const [loading, setLoading] = useState(true);
   const wsRef = useRef(null);
   const [query, setQuery] = useState("");
@@ -26,7 +25,6 @@ export default function WorkflowsPage() {
   const [pageSize, setPageSize] = useState(20);
   const [instances, setInstances] = useState([]);
   const [selectedInstance, setSelectedInstance] = useState("all");
-  const [isSuperadmin, setIsSuperadmin] = useState(false);
   const instanceMap = useMemo(() => {
     const map = {};
     instances.forEach(i => { map[i.prefix] = i.name || i.prefix; });
@@ -46,16 +44,6 @@ export default function WorkflowsPage() {
   useEffect(() => {
     async function fetchData() {
       try {
-        // determine role (use local flag immediately, then set state)
-        let isAdminFlag = false;
-        try {
-          const meRes = await fetch(apiPath(`/me`), { credentials: "include" });
-          const meData = await meRes.json();
-          isAdminFlag = String(meData?.role || "").toLowerCase() === "superadmin";
-          setIsSuperadmin(isAdminFlag);
-        } catch (_) {
-          setIsSuperadmin(false);
-        }
         const wfParams = new URLSearchParams();
         wfParams.set("q", query);
         wfParams.set("page", String(page));
@@ -72,36 +60,6 @@ export default function WorkflowsPage() {
         const exRes = await fetch(apiPath(`/executions?${exParams.toString()}`), { credentials: "include" });
         const exData = await exRes.json();
         setExecutions(Array.isArray(exData) ? exData : (exData.items || exData.data || []));
-
-        // Only superadmin sees user access column; fetch mapping only then
-        if (isAdminFlag) {
-          try {
-            const [accRes, usersRes] = await Promise.all([
-              fetch(apiPath(`/admin/workflow-access`), { credentials: "include" }),
-              fetch(apiPath(`/admin/users`), { credentials: "include" }),
-            ]);
-            if (accRes.ok && usersRes.ok) {
-              const acc = await accRes.json();
-              const users = await usersRes.json();
-              const idToEmail = {};
-              (Array.isArray(users) ? users : []).forEach(u => { idToEmail[u.id] = u.email || u.id; });
-              const wfIdToEmails = {};
-              (Array.isArray(acc) ? acc : []).forEach(row => {
-                const wfId = String(row.workflow_id);
-                const email = idToEmail[row.user_id] || row.user_id;
-                if (!wfIdToEmails[wfId]) wfIdToEmails[wfId] = [];
-                if (!wfIdToEmails[wfId].includes(email)) wfIdToEmails[wfId].push(email);
-              });
-              setUserAccess(wfIdToEmails);
-            } else {
-              setUserAccess({});
-            }
-          } catch (_) {
-            setUserAccess({});
-          }
-        } else {
-          setUserAccess({});
-        }
       } catch (err) {
         setWorkflows([]);
         setExecutions([]);
@@ -204,9 +162,6 @@ export default function WorkflowsPage() {
               <th style={{ borderBottom: "1px solid #eaeaea", padding: 10, textAlign: "left" }}>Instance</th>
               <th style={{ borderBottom: "1px solid #eaeaea", padding: 10, textAlign: "left" }}>Active</th>
               <th style={{ borderBottom: "1px solid #eaeaea", padding: 10, textAlign: "left" }}>Execution Count</th>
-              {isSuperadmin && (
-                <th style={{ borderBottom: "1px solid #eaeaea", padding: 10, textAlign: "left" }}>User Access</th>
-              )}
             </tr>
           </thead>
           <tbody>
@@ -235,9 +190,6 @@ export default function WorkflowsPage() {
                     </span>
                   </td>
                   <td style={{ padding: 10 }}>{executionCounts[wfId] || 0}</td>
-                  {isSuperadmin && (
-                    <td style={{ padding: 10 }}>{(userAccess[wfId] || []).join(", ") || "-"}</td>
-                  )}
                 </tr>
               );
             })}

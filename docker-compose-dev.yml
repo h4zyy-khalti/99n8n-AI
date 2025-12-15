@@ -1,17 +1,40 @@
-version: "3.9"
-
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-n8n_db}
+      POSTGRES_USER: ${POSTGRES_USER:-n8n_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-n8n_password}
+    ports:
+      - "15432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-n8n_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   backend:
-    image: kcr.khalti.com.np/kwati/99n8n-backend:develop
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
     container_name: backend
     env_file:
       - .env
     ports:
       - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   frontend:
-    image: kcr.khalti.com.np/kwati/99n8n-frontend:develop
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: frontend
     ports:
       - "3000:3000"
@@ -20,3 +43,6 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+
+volumes:
+  postgres_data:

@@ -106,40 +106,6 @@ async def set_role(request: Request, current_user=Depends(require_superadmin), d
         db.rollback()
         return JSONResponse({"error": str(e)}, status_code=500)
 
-@router.delete("/users/{user_id}")
-async def delete_user(user_id: str, current_user=Depends(require_superadmin), db: Session = Depends(get_db)):
-    """Delete a user. Only superadmins can delete users. Cannot delete yourself."""
-    try:
-        user_uuid = uuid.UUID(user_id)
-        current_user_id = uuid.UUID(current_user["id"])
-        
-        # Prevent superadmins from deleting themselves
-        if current_user_id == user_uuid:
-            return JSONResponse({"error": "You cannot delete yourself"}, status_code=400)
-        
-        profile = db.query(Profile).filter(Profile.id == user_uuid).first()
-        if not profile:
-            return JSONResponse({"error": "User not found"}, status_code=404)
-        
-        # Log the action before deletion
-        action_log = ActionLog(
-            user_id=current_user_id,
-            action=f"Deleted user: {profile.email}",
-            timestamp=datetime.utcnow()
-        )
-        db.add(action_log)
-        
-        # Delete the user (cascade will handle related records)
-        db.delete(profile)
-        db.commit()
-        
-        return {"success": True}
-    except ValueError:
-        return JSONResponse({"error": "Invalid user_id format"}, status_code=400)
-    except Exception as e:
-        db.rollback()
-        return JSONResponse({"error": str(e)}, status_code=500)
-
 @router.get("/action-logs")
 async def action_logs(_=Depends(require_superadmin), db: Session = Depends(get_db)):
     try:
@@ -196,6 +162,45 @@ async def grant_workflow_access(request: Request, _=Depends(require_superadmin),
         db.rollback()
         return JSONResponse({"error": str(e)}, status_code=500)
 
+
+@router.post("/workflow-access/grant-bulk")
+async def grant_workflow_access_bulk(request: Request, _=Depends(require_superadmin), db: Session = Depends(get_db)):
+    """Grant workflow access to a user for multiple workflows in one call (idempotent)."""
+    body = await request.json()
+    user_id_str = body.get("user_id")
+    workflow_ids = body.get("workflow_ids") or []
+    if not user_id_str or not workflow_ids:
+        return JSONResponse({"error": "Missing user_id or workflow_ids"}, status_code=400)
+    try:
+        user_id = uuid.UUID(user_id_str)
+        workflow_id_set = {str(wf_id) for wf_id in workflow_ids if wf_id}
+        if not workflow_id_set:
+            return JSONResponse({"error": "workflow_ids is empty"}, status_code=400)
+
+        # Find existing to keep operation idempotent
+        existing_rows = db.query(UserWorkflowAccess.workflow_id).filter(
+            UserWorkflowAccess.user_id == user_id,
+            UserWorkflowAccess.workflow_id.in_(workflow_id_set)
+        ).all()
+        existing_ids = {row[0] for row in existing_rows}
+
+        to_create = workflow_id_set - existing_ids
+        for wf_id in to_create:
+            db.add(UserWorkflowAccess(user_id=user_id, workflow_id=wf_id))
+        db.commit()
+
+        return {
+            "granted": len(to_create),
+            "skipped": len(existing_ids),
+            "total_requested": len(workflow_id_set)
+        }
+    except ValueError:
+        return JSONResponse({"error": "Invalid user_id format"}, status_code=400)
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @router.post("/workflow-access/revoke")
 async def revoke_workflow_access(request: Request, _=Depends(require_superadmin), db: Session = Depends(get_db)):
     body = await request.json()
@@ -213,6 +218,37 @@ async def revoke_workflow_access(request: Request, _=Depends(require_superadmin)
             db.delete(access)
             db.commit()
         return {"success": True}
+    except ValueError:
+        return JSONResponse({"error": "Invalid user_id format"}, status_code=400)
+    except Exception as e:
+        db.rollback()
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.post("/workflow-access/revoke-bulk")
+async def revoke_workflow_access_bulk(request: Request, _=Depends(require_superadmin), db: Session = Depends(get_db)):
+    """Revoke workflow access for multiple workflows in one call (idempotent)."""
+    body = await request.json()
+    user_id_str = body.get("user_id")
+    workflow_ids = body.get("workflow_ids") or []
+    if not user_id_str or not workflow_ids:
+        return JSONResponse({"error": "Missing user_id or workflow_ids"}, status_code=400)
+    try:
+        user_id = uuid.UUID(user_id_str)
+        workflow_id_set = {str(wf_id) for wf_id in workflow_ids if wf_id}
+        if not workflow_id_set:
+            return JSONResponse({"error": "workflow_ids is empty"}, status_code=400)
+
+        deleted = db.query(UserWorkflowAccess).filter(
+            UserWorkflowAccess.user_id == user_id,
+            UserWorkflowAccess.workflow_id.in_(workflow_id_set)
+        ).delete(synchronize_session=False)
+        db.commit()
+
+        return {
+            "revoked": deleted,
+            "total_requested": len(workflow_id_set)
+        }
     except ValueError:
         return JSONResponse({"error": "Invalid user_id format"}, status_code=400)
     except Exception as e:
