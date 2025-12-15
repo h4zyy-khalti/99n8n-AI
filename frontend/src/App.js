@@ -11,6 +11,8 @@ import Loading from "./loading";
 import { useEffect, useState } from "react";
 import { apiPath } from "./api";
 
+
+//function
 function ProtectedRoute({ children }) {
   const [auth, setAuth] = useState(null);
 
