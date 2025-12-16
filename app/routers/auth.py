@@ -53,7 +53,7 @@ async def auth_callback_get(
         user_id_str = user_info['id']
         email = user_info['email']
         
-        # Convert Google ID to UUID
+        # Convert Google ID to UUID (deterministic, but we primarily key users by email)
         try:
             user_id = uuid.UUID(user_id_str[:32].ljust(32, '0'))
         except ValueError:
@@ -63,7 +63,12 @@ async def auth_callback_get(
         
         # Check if any profiles exist (for superadmin assignment)
         existing_any = db.query(Profile).first()
-        existing_profile = db.query(Profile).filter(Profile.id == user_id).first()
+
+        # Prefer matching by email to avoid duplicate rows for admin-created users
+        existing_profile = db.query(Profile).filter(Profile.email == email).first()
+        if not existing_profile:
+            # Fallback: check by id if email not found
+            existing_profile = db.query(Profile).filter(Profile.id == user_id).first()
         
         if not existing_profile:
             random_password = secrets.token_urlsafe(12)
@@ -73,10 +78,12 @@ async def auth_callback_get(
             db.add(profile)
             db.commit()
         else:
+            # Keep existing id/role; just ensure email is up to date
             if existing_profile.email != email:
                 existing_profile.email = email
                 db.commit()
             role = existing_profile.role
+            user_id = existing_profile.id
         
         # Create JWT token
         payload = {"id": str(user_id), "email": email, "role": role}
@@ -140,8 +147,10 @@ async def _process_user_login(user_info: dict, db: Session):
     # Check if any profiles exist (for superadmin assignment)
     existing_any = db.query(Profile).first()
     
-    # Check if user profile exists
-    existing_profile = db.query(Profile).filter(Profile.id == user_id).first()
+    # Prefer matching by email so admin-created users can log in via Google
+    existing_profile = db.query(Profile).filter(Profile.email == email).first()
+    if not existing_profile:
+        existing_profile = db.query(Profile).filter(Profile.id == user_id).first()
     
     if not existing_profile:
         # Create new profile
@@ -159,11 +168,12 @@ async def _process_user_login(user_info: dict, db: Session):
         db.commit()
         db.refresh(profile)
     else:
-        # Update email if changed
+        # Update email if changed, keep existing id/role
         if existing_profile.email != email:
             existing_profile.email = email
             db.commit()
         role = existing_profile.role
+        user_id = existing_profile.id
     
     # Create JWT token
     payload = {"id": str(user_id), "email": email, "role": role}

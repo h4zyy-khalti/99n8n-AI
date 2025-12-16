@@ -64,6 +64,13 @@ export default function AdminPage() {
   const [userError, setUserError] = useState("");
   const [instanceError, setInstanceError] = useState("");
   const [currentUser, setCurrentUser] = useState(null);
+  const [selectedUserId, setSelectedUserId] = useState(null);
+  const [userSearch, setUserSearch] = useState("");
+  const [workflowSearch, setWorkflowSearch] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [accessFilter, setAccessFilter] = useState("all");
+  const [accessUpdating, setAccessUpdating] = useState(false);
+  const [expandedCategories, setExpandedCategories] = useState({});
 
   useEffect(() => {
     async function loadAll() {
@@ -83,12 +90,21 @@ export default function AdminPage() {
         setLogs(Array.isArray(l) ? l : []);
         setInstances(Array.isArray(inst) ? inst : []);
         setCurrentUser(me);
+        if (!selectedUserId && Array.isArray(u) && u.length > 0) {
+          setSelectedUserId(u[0].id);
+        }
       } finally {
         setLoading(false);
       }
     }
     loadAll();
   }, []);
+
+  useEffect(() => {
+    if (!selectedUserId && users.length > 0) {
+      setSelectedUserId(users[0].id);
+    }
+  }, [users, selectedUserId]);
 
   const userIdToAccess = useMemo(() => {
     const map = {};
@@ -98,6 +114,72 @@ export default function AdminPage() {
     });
     return map;
   }, [access]);
+
+  const userIdToEmail = useMemo(() => {
+    const map = {};
+    users.forEach(u => { map[u.id] = u.email; });
+    return map;
+  }, [users]);
+
+  const categories = useMemo(() => {
+    const cat = new Set();
+    workflows.forEach(w => {
+      const wfId = String(w.id || "");
+      cat.add(wfId.includes(":") ? wfId.split(":")[0] : "default");
+    });
+    return Array.from(cat);
+  }, [workflows]);
+
+  const filteredUsers = useMemo(() => {
+    const q = userSearch.trim().toLowerCase();
+    if (!q) return users;
+    return users.filter(u => u.email.toLowerCase().includes(q));
+  }, [users, userSearch]);
+
+  const selectedUserAccess = selectedUserId ? (userIdToAccess[selectedUserId] || new Set()) : new Set();
+
+  const selectedUser = useMemo(
+    () => users.find(u => u.id === selectedUserId) || null,
+    [users, selectedUserId]
+  );
+
+  const isCurrentSuperadmin = currentUser?.role === "superadmin";
+  const isSelectedSuperadmin = selectedUser?.role === "superadmin";
+  const hideWorkflowPanel = isCurrentSuperadmin && isSelectedSuperadmin;
+  const showWorkflowCount = !isCurrentSuperadmin;
+
+  const filteredWorkflows = useMemo(() => {
+    const q = workflowSearch.trim().toLowerCase();
+    return workflows.filter(wf => {
+      const wfId = String(wf.id || "");
+      const wfName = String(wf.name || "");
+      const category = wfId.includes(":") ? wfId.split(":")[0] : "default";
+      const matchesCategory = categoryFilter === "all" || category === categoryFilter;
+      const matchesText = !q || wfName.toLowerCase().includes(q) || wfId.toLowerCase().includes(q);
+      const hasAccess = selectedUserAccess.has(wfId);
+      const matchesAccess =
+        accessFilter === "all" ||
+        (accessFilter === "has" && hasAccess) ||
+        (accessFilter === "missing" && !hasAccess);
+      return matchesCategory && matchesText && matchesAccess;
+    });
+  }, [workflows, workflowSearch, categoryFilter, accessFilter, selectedUserAccess]);
+
+  const groupedWorkflows = useMemo(() => {
+    const grouped = {};
+    filteredWorkflows.forEach(wf => {
+      const wfId = String(wf.id || "");
+      const category = wfId.includes(":") ? wfId.split(":")[0] : "default";
+      if (!grouped[category]) grouped[category] = [];
+      grouped[category].push(wf);
+    });
+    return grouped;
+  }, [filteredWorkflows]);
+
+  const allFilteredHaveAccess = useMemo(() => {
+    if (!selectedUserId || filteredWorkflows.length === 0) return false;
+    return filteredWorkflows.every(wf => selectedUserAccess.has(String(wf.id || "")));
+  }, [selectedUserId, filteredWorkflows, selectedUserAccess]);
 
   async function createUser() {
     if (!newUserEmail.trim()) {
@@ -148,42 +230,55 @@ export default function AdminPage() {
     }
   }
 
-  async function deleteUser(userId) {
-    if (!window.confirm("Are you sure you want to delete this user? This action cannot be undone.")) return;
-    try {
-      const res = await fetch(apiPath(`/admin/users/${userId}`), {
-        method: "DELETE",
-        credentials: "include"
-      });
-      if (res.ok) {
-        setUsers(users.filter(u => u.id !== userId));
-      } else {
-        const error = await res.json();
-        alert(error.error || "Failed to delete user");
-      }
-    } catch (e) {
-      alert("Failed to delete user");
-    }
-  }
-
   async function grant(userId, workflowId) {
-    await fetch(apiPath("/admin/workflow-access/grant"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ user_id: userId, workflow_id: workflowId })
-    });
-    setAccess([...access, { user_id: userId, workflow_id: workflowId }]);
+    await grantBulk(userId, [workflowId]);
   }
 
   async function revoke(userId, workflowId) {
-    await fetch(apiPath("/admin/workflow-access/revoke"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ user_id: userId, workflow_id: workflowId })
-    });
-    setAccess(access.filter(a => !(a.user_id === userId && String(a.workflow_id) === String(workflowId))));
+    await revokeBulk(userId, [workflowId]);
+  }
+
+  async function grantBulk(userId, workflowIds) {
+    if (!workflowIds.length) return;
+    setAccessUpdating(true);
+    try {
+      const res = await fetch(apiPath("/admin/workflow-access/grant-bulk"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ user_id: userId, workflow_ids: workflowIds })
+      });
+      if (res.ok) {
+        // Merge uniquely
+        setAccess(prev => {
+          const seen = new Set(prev.map(a => `${a.user_id}-${a.workflow_id}`));
+          const additions = workflowIds
+            .filter(id => !seen.has(`${userId}-${id}`))
+            .map(id => ({ user_id: userId, workflow_id: id }));
+          return [...prev, ...additions];
+        });
+      }
+    } finally {
+      setAccessUpdating(false);
+    }
+  }
+
+  async function revokeBulk(userId, workflowIds) {
+    if (!workflowIds.length) return;
+    setAccessUpdating(true);
+    try {
+      const res = await fetch(apiPath("/admin/workflow-access/revoke-bulk"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ user_id: userId, workflow_ids: workflowIds })
+      });
+      if (res.ok) {
+        setAccess(prev => prev.filter(a => !(a.user_id === userId && workflowIds.includes(String(a.workflow_id)))));
+      }
+    } finally {
+      setAccessUpdating(false);
+    }
   }
 
   async function createInstance() {
@@ -283,7 +378,7 @@ export default function AdminPage() {
           </Section>
           <Section title="Users">
             <Table
-              columns={["UUID", "Email", "Role", "Actions", "Delete"]}
+              columns={["UUID", "Email", "Role", "Actions"]}
               data={users}
               renderRow={u => (
                 <tr key={u.id} className="hover:bg-gray-50">
@@ -305,15 +400,6 @@ export default function AdminPage() {
                       <span className="text-sm text-gray-500 italic">Cannot downgrade yourself</span>
                     )}
                   </td>
-                  <td className="px-6 py-3">
-                    {currentUser && currentUser.id !== u.id ? (
-                      <button onClick={() => deleteUser(u.id)} className="px-3 py-1 rounded bg-red-500 text-white hover:bg-red-600 transition">
-                        Delete
-                      </button>
-                    ) : (
-                      <span className="text-sm text-gray-500 italic">Cannot delete yourself</span>
-                    )}
-                  </td>
                 </tr>
               )}
             />
@@ -323,27 +409,158 @@ export default function AdminPage() {
 
       {activeTab === "access" && (
         <Section title="User Access">
-          <Table
-            columns={["User", "Workflow", "Has Access", "Action"]}
-            data={users.flatMap(u => workflows.map(w => ({ user: u, workflow: w })))}
-            renderRow={({ user, workflow }) => {
-              const has = !!userIdToAccess[user.id]?.has(String(workflow.id));
-              return (
-                <tr key={`${user.id}-${workflow.id}`} className="hover:bg-gray-50">
-                  <td className="px-6 py-3">{user.email}</td>
-                  <td className="px-6 py-3">{workflow.name} ({workflow.id})</td>
-                  <td className="px-6 py-3">{has ? "Yes" : "No"}</td>
-                  <td className="px-6 py-3">
-                    {has ? (
-                      <button onClick={() => revoke(user.id, workflow.id)} className="px-3 py-1 rounded bg-red-500 text-white hover:bg-red-600 transition">Revoke</button>
-                    ) : (
-                      <button onClick={() => grant(user.id, workflow.id)} className="px-3 py-1 rounded bg-green-500 text-white hover:bg-green-600 transition">Grant</button>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="bg-white border rounded-md p-4 shadow-sm">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold">Users</h3>
+                <input
+                  value={userSearch}
+                  onChange={e => setUserSearch(e.target.value)}
+                  placeholder="Filter users"
+                  className="p-2 border rounded w-40"
+                />
+              </div>
+              <div className="max-h-96 overflow-auto divide-y">
+                {filteredUsers.map(u => {
+                  const count = userIdToAccess[u.id]?.size || 0;
+                  const active = u.id === selectedUserId;
+                  return (
+                    <button
+                      key={u.id}
+                      onClick={() => setSelectedUserId(u.id)}
+                      className={`w-full text-left px-3 py-2 flex items-center justify-between ${active ? "bg-blue-50 border-l-4 border-blue-500" : ""}`}
+                    >
+                      <div>
+                        <div className="font-medium">{u.email}</div>
+                        <div className="text-xs text-gray-500">Role: {u.role}</div>
+                      </div>
+                      {showWorkflowCount && (
+                        <span className="text-xs text-gray-600">{count} workflows</span>
+                      )}
+                    </button>
+                  );
+                })}
+                {filteredUsers.length === 0 && <div className="text-sm text-gray-500 py-4 text-center">No users</div>}
+              </div>
+            </div>
+
+            {!hideWorkflowPanel && (
+            <div className="lg:col-span-2 bg-white border rounded-md p-4 shadow-sm">
+              <div className="flex flex-wrap gap-3 mb-4 items-center">
+                <input
+                  value={workflowSearch}
+                  onChange={e => setWorkflowSearch(e.target.value)}
+                  placeholder="Search workflows"
+                  className="p-2 border rounded flex-1 min-w-[180px]"
+                />
+                <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)} className="p-2 border rounded">
+                  <option value="all">All categories</option>
+                  {categories.map(c => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+                <select value={accessFilter} onChange={e => setAccessFilter(e.target.value)} className="p-2 border rounded">
+                  <option value="all">All access</option>
+                  <option value="has">Has access</option>
+                  <option value="missing">No access</option>
+                </select>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="accent-blue-600"
+                    disabled={!selectedUserId || filteredWorkflows.length === 0 || accessUpdating}
+                    checked={allFilteredHaveAccess}
+                    onChange={e => {
+                      if (!selectedUserId) return;
+                      const ids = filteredWorkflows.map(w => w.id);
+                      if (e.target.checked) {
+                        grantBulk(selectedUserId, ids);
+                      } else {
+                        revokeBulk(selectedUserId, ids);
+                      }
+                    }}
+                  />
+                  Select All Workflows
+                </label>
+                {/* <div className="flex gap-2 flex-wrap">
+                  <button
+                    disabled={!selectedUserId || filteredWorkflows.length === 0 || accessUpdating}
+                    onClick={() => selectedUserId && grantBulk(selectedUserId, filteredWorkflows.map(w => w.id))}
+                    className="px-3 py-2 rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+                  >
+                    Grant 
+                  </button>
+                  <button
+                    disabled={!selectedUserId || filteredWorkflows.length === 0 || accessUpdating}
+                    onClick={() => selectedUserId && revokeBulk(selectedUserId, filteredWorkflows.map(w => w.id))}
+                    className="px-3 py-2 rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+                  >
+                    Revoke 
+                  </button>
+                </div> */}
+              </div>
+
+              {!selectedUserId && <div className="text-sm text-gray-500">Select a user to manage access.</div>}
+
+              {selectedUserId && Object.keys(groupedWorkflows).length === 0 && (
+                <div className="text-sm text-gray-500">No workflows match filters.</div>
+              )}
+
+              {selectedUserId && Object.entries(groupedWorkflows).map(([category, list]) => {
+                const isOpen = !!expandedCategories[category];
+                const label = category === "default" ? "Default" : category;
+                return (
+                  <div key={category} className="mb-4 border rounded">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedCategories(prev => ({
+                          ...prev,
+                          [category]: !prev[category],
+                        }))
+                      }
+                      className="w-full flex items-center justify-between bg-gray-50 px-3 py-2 font-semibold"
+                    >
+                      <span>{label}</span>
+                      <span className="text-sm text-gray-600">{isOpen ? "▼" : "▶"}</span>
+                    </button>
+                    {isOpen && (
+                      <div className="divide-y">
+                        {list.map(wf => {
+                          const wfId = String(wf.id || "");
+                          const has = selectedUserAccess.has(wfId);
+                          return (
+                            <div key={wfId} className="px-3 py-2 flex items-center justify-between">
+                              <div>
+                                <div className="font-medium">{wf.name || wf.id}</div>
+                                <div className="text-xs text-gray-500">{wfId}</div>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <span className={`text-xs px-2 py-1 rounded ${has ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-600"}`}>
+                                  {has ? "Has access" : "No access"}
+                                </span>
+                                <label className="flex items-center gap-2 text-sm">
+                                  <input
+                                    type="checkbox"
+                                    checked={has}
+                                    disabled={accessUpdating}
+                                    onChange={e => (e.target.checked ? grant(selectedUserId, wfId) : revoke(selectedUserId, wfId))}
+                                    className="accent-blue-600"
+                                  />
+                                  {has ? "Revoke" : "Grant"}
+                                </label>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     )}
-                  </td>
-                </tr>
-              );
-            }}
-          />
+                  </div>
+                );
+              })}
+            </div>
+            )}
+          </div>
         </Section>
       )}
 
@@ -355,7 +572,7 @@ export default function AdminPage() {
             renderRow={l => (
               <tr key={l.timestamp + l.user_id} className="hover:bg-gray-50">
                 <td className="px-6 py-3">{l.timestamp}</td>
-                <td className="px-6 py-3">{l.user_id}</td>
+                <td className="px-6 py-3">{userIdToEmail[l.user_id] || l.user_id}</td>
                 <td className="px-6 py-3">{l.action}</td>
               </tr>
             )}
