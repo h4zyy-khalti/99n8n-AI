@@ -138,6 +138,16 @@ export default function AdminPage() {
 
   const selectedUserAccess = selectedUserId ? (userIdToAccess[selectedUserId] || new Set()) : new Set();
 
+  const selectedUser = useMemo(
+    () => users.find(u => u.id === selectedUserId) || null,
+    [users, selectedUserId]
+  );
+
+  const isCurrentSuperadmin = currentUser?.role === "superadmin";
+  const isSelectedSuperadmin = selectedUser?.role === "superadmin";
+  const hideWorkflowPanel = isCurrentSuperadmin && isSelectedSuperadmin;
+  const showWorkflowCount = !isCurrentSuperadmin;
+
   const filteredWorkflows = useMemo(() => {
     const q = workflowSearch.trim().toLowerCase();
     return workflows.filter(wf => {
@@ -424,7 +434,9 @@ export default function AdminPage() {
                         <div className="font-medium">{u.email}</div>
                         <div className="text-xs text-gray-500">Role: {u.role}</div>
                       </div>
-                      <span className="text-xs text-gray-600">{count} workflows</span>
+                      {showWorkflowCount && (
+                        <span className="text-xs text-gray-600">{count} workflows</span>
+                      )}
                     </button>
                   );
                 })}
@@ -432,6 +444,7 @@ export default function AdminPage() {
               </div>
             </div>
 
+            {!hideWorkflowPanel && (
             <div className="lg:col-span-2 bg-white border rounded-md p-4 shadow-sm">
               <div className="flex flex-wrap gap-3 mb-4 items-center">
                 <input
@@ -546,6 +559,7 @@ export default function AdminPage() {
                 );
               })}
             </div>
+            )}
           </div>
         </Section>
       )}
